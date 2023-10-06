@@ -506,3 +506,176 @@ def get_data_from_playing_search(model_filename, target_size=8000, max_steps_per
         return
 
     return data, avg_score
+def train(model, outer_start=0, outer_max=100):
+    # outer_max: update samples
+    inner_max = 5
+    epoch_training = 5  # model fitting times
+    batch_training = 512
+
+    buffer_new_size = 12000
+    buffer_outer_max = 4
+    repeat_new_buffer = 2
+    history = None
+
+    for outer in range(outer_start + 1, outer_start + 1 + outer_max):
+        print('======== outer = {} ========'.format(outer))
+        time_outer_begin = time.time()
+        modify_reward_coef(outer)
+
+        # 1. collecting data.
+        buffer = list()
+
+        # getting new samples
+        new_buffer = collect_samples_multiprocess_queue(model_filename=FOLDER_NAME + f'whole_model/outer_{outer - 1}',
+                                                        target_size=buffer_new_size)
+        save_buffer_to_file(FOLDER_NAME + f'dataset/buffer_{outer}.pkl', new_buffer)
+        buffer += new_buffer
+
+        # load more samples. The latest dataset can be added to the buffer twice to give them larger weight.
+        for i in range(max(1, outer - buffer_outer_max + 1), outer):
+            buffer += load_buffer_from_file(filename=FOLDER_NAME + 'dataset/buffer_{}.pkl'.format(i))
+
+        for _ in range(repeat_new_buffer):
+            buffer += load_buffer_from_file(filename=FOLDER_NAME + 'dataset/buffer_{}.pkl'.format(outer))
+
+        random.shuffle(buffer)
+
+        # 2. calculating target
+        s, s_, r_, dones_ = process_buffer_best(buffer)
+
+        buffer_size = len(buffer)
+        new_buffer_size = len(new_buffer)
+        del buffer
+        del new_buffer
+
+        for inner in range(inner_max):
+            print(f"      ======== inner = {inner + 1}/{inner_max} =========")
+            target = list()
+            for i in range(int(s.shape[0] / batch_training) + 1):
+                start = i * batch_training
+                end = min((i + 1) * batch_training, s.shape[0])
+                target.append(
+                    model(split_input(s_[start:end]), training=False).numpy().reshape(-1) + r_[start:end])
+            target = np.concatenate(target)
+            # when it's gameover, Q[s'] must not be added
+            for i in range(len(dones_)):
+                if dones_[i]:
+                    target[i] = r_[i]
+
+            target = target * gamma
+            if inner == inner_max - 1:
+                save_training_dataset_to_file(filename=FOLDER_NAME + 'dataset/dataset_{}.pkl'.format(outer),
+                                              dataset=(s, target))
+
+            history = model.fit(split_input(s), target, batch_size=batch_training, epochs=epoch_training, verbose=0)
+            print('      loss = {:8.3f}   mse = {:8.3f}'.format(history.history['loss'][-1],
+                                                                history.history['mean_squared_error'][-1]))
+
+        model.save(FOLDER_NAME + 'whole_model/outer_{}'.format(outer))
+        model.save_weights(FOLDER_NAME + 'checkpoints_dqn/outer_{}'.format(outer))
+
+        time_outer_end = time.time()
+        text_ = ''
+        if outer == 1:
+            text_ += f'input shapes: {shape_main_grid} {shape_hold_next} \n {shape_hold_next_description} \n'
+
+        text_ += 'outer = {:>4d} | pre-training avg score = {:>8.3f} | loss = {:>8.3f} | mse = {:>8.3f} |' \
+                 ' dataset size = {:>7d} | new dataset size = {:>7d} | time elapsed: {:>6.1f} sec | coef = {} | penalty = {:>7d} | gamma = {:>6.3f} |' \
+                 ' search best/rd = {}, {} |\n' \
+            .format(outer, current_avg_score, history.history['loss'][-1], history.history['mean_squared_error'][-1],
+                    buffer_size, new_buffer_size, time_outer_end - time_outer_begin, reward_coef, penalty, gamma,
+                    num_search_best, num_search_rd
+                    )
+        append_record(text_)
+        print('   ' + text_)
+
+
+def save_buffer_to_file(filename, buffer):
+    from pathlib import Path
+    Path(FOLDER_NAME + 'dataset').mkdir(parents=True, exist_ok=True)
+    with open(filename, 'wb') as f:
+        pickle.dump(buffer, f)
+
+
+def save_training_dataset_to_file(filename, dataset):
+    from pathlib import Path
+    Path(FOLDER_NAME + 'dataset').mkdir(parents=True, exist_ok=True)
+    with open(filename, 'wb') as f:
+        pickle.dump(dataset, f)
+
+
+def load_buffer_from_file(filename):
+    with open(filename, 'rb') as f:
+        return pickle.load(f)
+
+
+def process_buffer_best(buffer):
+    s = list()
+    s_ = list()
+    add_scores = list()
+    dones_ = list()
+    for row in buffer:
+        s.append(row[0])
+        s_.append(row[1])
+        add_scores.append(row[2])
+        dones_ += [row[3]]
+
+    s = np.concatenate(s)
+    s_ = np.concatenate(s_)
+    r_ = get_reward(add_scores, dones_)
+    r_ = np.concatenate(r_)
+    return s, s_, r_, dones_
+
+
+def render_env_debug_state_input(state):
+    if STATE_INPUT == 'dense':
+        return
+
+    global env_debug
+    if env_debug is None:
+        env_debug = Game(gui=Gui())
+
+    loc = 0
+    for r in range(GAME_BOARD_HEIGHT):
+        for c in range(GAME_BOARD_WIDTH):
+            env_debug.current_state.grid[r][c] = state[0, loc]
+            loc += 1
+
+    if STATE_INPUT == 'short':
+        loc += 3
+    else:
+        loc += 21
+
+    env_debug.render()
+
+
+def render_env_debug_gamestate(gamestate):
+    if STATE_INPUT == 'dense':
+        return
+
+    global env_debug
+    if env_debug is None:
+        env_debug = Game(gui=Gui())
+
+    env_debug.current_state = gamestate
+    env_debug.render()
+
+
+def get_q_from_gamestate(model, gamestate):
+    return model(split_input(Game.get_state_input(gamestate))).numpy()
+
+
+def check_same_state(s1, s2):
+    s1_ = s1.reshape(-1)
+    s2_ = s2.reshape(-1)
+    for i in range(s1_.shape[0]):
+        if s1_[i] != s2_[i]: return False
+
+    return True
+
+
+def append_record(text, filename=None):
+    if filename is None:
+        filename = FOLDER_NAME + 'record.txt'
+    with open(filename, 'a') as f:
+        f.write(text)
