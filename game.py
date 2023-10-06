@@ -597,3 +597,150 @@ class Game:
         self.all_possible_states = []
         self.height = height
 
+def act(self, action):
+        if self.current_state.game_status == "gameover":
+            return self.get_state_input(self.current_state), 0, True, False
+
+        success = False
+        done = False
+        add_score = 0
+        action = action.lower()
+
+        copy_state = self.current_state.copy()
+
+        if action == "left":
+            copy_state.tetromino.move((-1, 0, 0))
+            success = copy_state.process_left_right()
+        elif action == "right":
+            copy_state.tetromino.move((1, 0, 0))
+            success = copy_state.process_left_right()
+        elif action == "turn left":
+            copy_state.tetromino.move((0, 0, 1))
+            success = copy_state.process_turn()
+        elif action == "turn right":
+            copy_state.tetromino.move((0, 0, -1))
+            success = copy_state.process_turn()
+        elif action == "down":
+            copy_state.tetromino.move((0, 1, 0))
+            if copy_state.check_collision():
+                copy_state.tetromino.move((0, -1, 0))
+                add_score, done = copy_state.process_down_collision()
+            success = True  # move down will take effect no matter what
+        elif action == "soft":
+            # not a real move for human players
+            copy_state.soft_drop()
+            success = True
+        elif action == "drop":
+            add_score, done = copy_state.hard_drop()
+            success = True
+        elif action == "hold":
+            success = copy_state.hold()
+        else:
+            print(str(action) + " action is not found. Please check.")
+
+        if success:
+            self.current_state = copy_state
+
+        if action == "down" or action == "drop" or action == "hold":
+            self.current_state.idle = 0
+        elif self.current_state.idle >= IDLE_MAX:
+            self.current_state.idle = 0
+            self.current_state.tetromino.move((0, 1, 0))
+            if self.current_state.check_collision():
+                self.current_state.tetromino.move((0, -1, 0))
+                add_score, done = self.current_state.process_down_collision()
+            success = True  # move down will take effect no matter what
+        else:
+            self.current_state.idle += 1
+
+        return self.get_state_input(self.current_state), add_score, done, success
+
+    def render(self):
+        if self.gui is not None:
+            self.update_gui()
+            self.gui.redraw()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pass
+
+    def restart(self, height=None):
+        if height is None:
+            self.current_state = Gamestate(seed=self.seed, height=self.height)
+        else:
+            self.current_state = Gamestate(seed=self.seed, height=height)
+        self.current_state.start()
+
+    def update_gui(self, gamestate=None, is_display_current=True):
+        if self.gui is None: return
+        if gamestate is None:
+            gamestate = self.current_state
+
+        if is_display_current:
+            above_grid = gamestate.tetromino.to_above_grid()
+            main_grid = helper.copy_2d(gamestate.put_tet_to_grid())
+        else:
+            above_grid = [0] * GAME_BOARD_WIDTH
+            main_grid = helper.copy_2d(gamestate.grid)
+
+        hold_grid = Tetromino.to_small_window(gamestate.hold_type)
+        next_grids = list()
+        for n in gamestate.next:
+            next_grids.append(Tetromino.to_small_window(n))
+        self.gui.update_grids_color((main_grid, hold_grid, next_grids), above_grid)
+
+        self.gui.set_score_text(gamestate.get_score_text())
+        self.gui.set_info_text(gamestate.get_info_text())
+
+    def run(self):
+        is_run = True
+        while is_run:
+            if self.gui is not None:
+                self.update_gui()
+                self.gui.redraw()
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    is_run = False
+
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_a:
+                        self.act("left")
+                    if event.key == pygame.K_d:
+                        self.act("right")
+                    if event.key == pygame.K_s:
+                        self.act("down")
+                    if event.key == pygame.K_j:
+                        self.act("turn left")
+                    if event.key == pygame.K_k:
+                        self.act("turn right")
+                    if event.key == pygame.K_SPACE:
+                        self.act("drop")
+                    if event.key == pygame.K_q:
+                        self.act("hold")
+                    if event.key == pygame.K_r:
+                        self.current_state = Gamestate(seed=self.seed)
+                        self.current_state.start()
+                    if event.key == pygame.K_1:
+                        self.display_all_possible_state()
+                    if event.key == pygame.K_i:
+                        self.info_print()
+                    if event.key == pygame.K_2:
+                        # changing current tetromino
+                        pool_size = Tetromino.pool_size()
+                        num = self.current_state.tetromino.to_num()
+                        # remember the return num has already been increased by 1, leaving room for 0
+                        if num >= pool_size:
+                            num = num - pool_size
+                        self.current_state.tetromino = Tetromino.new_tetromino_num(num)
+
+    def info_print(self):
+        print(self.current_state.score)
+
+        return None
+
+    def reset(self, height=None):
+        if height is None:
+            self.restart()
+        else:
+            self.restart(height=height)
+        return self.get_state_input(self.current_state)
