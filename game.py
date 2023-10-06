@@ -78,3 +78,21 @@ class Gamestate:
         self.next[:-1] = self.next[1:]
         self.next[-1] = self.next_next
         self.next_next = Tetromino.random_type_str(self.get_random().random())
+
+def initial_grid(self, height=0):
+        grid = list()
+        for _ in range(GAME_BOARD_HEIGHT):
+            grid.append([0] * GAME_BOARD_WIDTH)
+
+        if height == 0: return grid
+
+        # if height = 15, range(6, 20), saving the first row for random generation
+        for i in range(GAME_BOARD_HEIGHT - height, GAME_BOARD_HEIGHT):
+            for j in range(GAME_BOARD_WIDTH):
+                grid[i][j] = self.get_random().randint(0, Tetromino.pool_size())
+            grid[i][self.get_random().randint(0, GAME_BOARD_WIDTH - 1)] = 0
+
+        # for j in range(GAME_BOARD_WIDTH):
+        #     grid[GAME_BOARD_HEIGHT - height][j] = self.get_random().randint(0, 1)
+
+        return grid
