@@ -679,3 +679,89 @@ def append_record(text, filename=None):
         filename = FOLDER_NAME + 'record.txt'
     with open(filename, 'a') as f:
         f.write(text)
+def collect_samples_multiprocess_queue(model_filename, target_size=10000):
+    timeout = 7200
+    cpu_count = min(multiprocessing.cpu_count(), CPU_MAX)
+    jobs = list()
+    q = multiprocessing.Queue()
+    for i in range(cpu_count):
+        p = multiprocessing.Process(target=get_data_from_playing_search,
+                                    args=(
+                                        model_filename, int(target_size / cpu_count), 250, i, q))
+        jobs.append(p)
+        p.start()
+
+    data = list()
+    scores = list()
+
+    for i in range(cpu_count):
+        d_, s_ = q.get(timeout=timeout)
+        data += d_
+        scores.append(s_)
+
+    i = 0
+    for proc in jobs:
+        proc.join()
+        i += 1
+
+    # average score is max(scores) because it's the process with eps = 0
+    print(f'end multiprocess: total data length: {len(data)} | avg score: {max(scores):<7.2f}')
+    global current_avg_score
+    current_avg_score = max(scores)
+
+    return data
+
+
+def modify_reward_coef(outer):
+    global reward_coef
+    r_1 = reward_coef_plan[0]
+    r_2 = reward_coef_plan[1]
+    start = reward_coef_plan[2]
+    end = reward_coef_plan[3]
+    for i in range(len(reward_coef)):
+        rate = (outer - start) / (end - start)
+        rate = min(rate, 1)
+        rate = max(rate, 0)
+        reward_coef[i] = r_1[i] + (r_2[i] - r_1[i]) * rate
+        reward_coef[i] = round(reward_coef[i] * 1024) / 1024
+    print(f' reward_coef modified to {reward_coef}')
+
+
+def get_reward(add_scores, dones, add=0):
+    reward = list()
+    # manipulate the reward
+    for i in range(len(add_scores)):
+        add_score = add_scores[i]
+
+        # give extra reward to t-spin
+        # if add_score != int(add_score):
+        #     add_score = add_score * 10
+
+        if add_score >= 90:
+            add_score = add_score * reward_coef[0]
+        elif add_score >= 50:
+            add_score = add_score * reward_coef[1]
+        elif add_score >= 20:
+            add_score = add_score * reward_coef[2]
+        elif add_score >= 5:
+            add_score = add_score * reward_coef[3]
+
+        if dones[i]:
+            add_score += penalty
+        reward.append(add_score + add)
+    return np.array(reward).reshape([-1, 1])
+
+
+if __name__ == "__main__":
+    if MODE == 'human_player':
+        game = Game(gui=Gui(), seed=None)
+        game.restart()
+        game.run()
+    elif MODE == 'ai_player_training':
+        if OUT_START == 0:
+            load_model()
+        model_load = keras.models.load_model(FOLDER_NAME + 'whole_model/outer_{}'.format(OUT_START))
+        train(model_load, outer_start=OUT_START, outer_max=OUTER_MAX)
+    elif MODE == 'ai_player_watching':
+        model_load = keras.models.load_model(FOLDER_NAME + 'whole_model/outer_{}'.format(OUT_START))
+        ai_play_search(model_load, is_gui_on=True)
