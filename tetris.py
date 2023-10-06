@@ -398,3 +398,111 @@ def get_data_from_playing_cnn2d(model_filename, target_size=8000, max_steps_per_
             rewards = get_reward(add_scores, dones)
 
             pool_size = Tetromino.pool_size()
+# get the best first before modifying the last next
+            q = rewards + model(split_input(possible_states), training=False).numpy()
+            for j in range(len(dones)):
+                if dones[j]:
+                    q[j] = rewards[j]
+            best = tf.argmax(q).numpy()[0] + 0
+
+            # if hold was empty, then we don't know what's next; if hold was not empty, then we know what's next!
+            if is_include_hold and not is_new_hold:
+                possible_states[1][:-1, -pool_size:] = 0
+            else:
+                possible_states[1][:, -pool_size:] = 0
+
+            rand_fl = rand.random()
+            if rand_fl > epsilon:
+                chosen = best
+            else:
+                # probability based on q
+                # q_normal = q.reshape(-1)
+                # q_normal = q_normal - np.min(q_normal) + 0.001
+                # q_normal = q_normal / np.sum(q_normal) + 0.3
+                # q_normal = q_normal / np.sum(q_normal)
+                # chosen = np.random.choice(q_normal.shape[0], p=q_normal)
+
+                # uniform probability
+                chosen = random.randint(0, len(dones) - 1)
+
+            episode_data.append(
+                (s, (possible_states[0][best], possible_states[1][best]), add_scores[best], dones[best]))
+
+            if add_scores[best] != int(add_scores[best]):
+                t_spins += 1
+
+            env.step(chosen=chosen)
+
+            if env.is_done() or step == max_steps_per_episode - 1:
+                data += episode_data
+                total_score += env.current_state.score
+                break
+
+        if len(data) > target_size:
+            print('proc_num: #{:<2d} | total episodes:{:<4d} | avg score:{:<7.2f} | data size:{} | t-spins: {}'.format(
+                proc_num, episode + 1, total_score / (episode + 1), len(data), t_spins))
+            avg_score = total_score / (episode + 1)
+            break
+
+    if queue is not None:
+        queue.put((data, avg_score), block=False)
+        return
+
+    return data, avg_score
+
+
+def get_data_from_playing_search(model_filename, target_size=8000, max_steps_per_episode=1000, proc_num=0,
+                                 queue=None):
+    tf.autograph.set_verbosity(3)
+    model = keras.models.load_model(model_filename)
+    if model is None:
+        print('ERROR: model has not been loaded. Check this part.')
+        exit()
+
+    global epsilon
+    if proc_num == 0:
+        epsilon = 0
+
+    data = list()
+    env = Game()
+    episode_max = 1000
+    total_score = 0
+    avg_score = 0
+
+    for episode in range(episode_max):
+        env.reset()
+        episode_data = list()
+        for step in range(int(max_steps_per_episode)):
+            gamestates_new, gamestates_steps, reward_prev = search_steps(model, env, action_take=5)
+            episode_data += gamestates_to_training_data(env, gamestates_steps[0])
+
+            if rand.random() > epsilon:
+                env.current_state = gamestates_new[0].copy()
+            else:
+                env.current_state = gamestates_new[-1].copy()
+
+            if env.is_done() or len(data) + len(episode_data) >= target_size:
+                break
+
+            if proc_num == 0:
+                sys.stdout.write(
+                    f'\r data: {len(data) + len(episode_data)} / {target_size} |'
+                    f' score per step : {(total_score + env.current_state.score) / (len(data) + len(episode_data)):<6.2f} |'
+                    f' game num : {episode + 1}')
+                sys.stdout.flush()
+
+        data += episode_data
+        total_score += env.current_state.score
+
+        if len(data) >= target_size:
+            if proc_num == 0:
+                print('\n proc_num: #{:<2d} | total episodes:{:<4d} | avg score:{:<7.2f} | data size:{}'.format(
+                    proc_num, episode + 1, total_score / (episode + 1), len(data)))
+            avg_score = total_score / (episode + 1)
+            break
+
+    if queue is not None:
+        queue.put((data, avg_score), block=False)
+        return
+
+    return data, avg_score
