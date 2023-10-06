@@ -73,3 +73,8 @@ class Gamestate:
         self.pieces = 0
         self.idle = 0
     
+ def start(self):
+        self.tetromino = Tetromino.new_tetromino(self.next[0])
+        self.next[:-1] = self.next[1:]
+        self.next[-1] = self.next_next
+        self.next_next = Tetromino.random_type_str(self.get_random().random())
