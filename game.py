@@ -744,3 +744,184 @@ def act(self, action):
         else:
             self.restart(height=height)
         return self.get_state_input(self.current_state)
+ def step(self, action=None, chosen=None):
+        if action is not None:
+            return self.act(action)
+        elif chosen is not None:
+            self.current_state = self.all_possible_states[chosen]
+            return self.get_state_input(self.current_state)
+        else:
+            print('something is wrong with the args in step()')
+            return None
+
+    def is_done(self):
+        if self.current_state.game_status == 'gameover':
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def get_state_input(gamestate):
+        if STATE_INPUT == 'long' or STATE_INPUT == 'short':
+            input_ = np.concatenate([np.reshape(Game.get_main_grid_input(gamestate), [1, -1]),
+                                     Game.get_height_hole_hold_next_input(gamestate)], axis=1)
+        elif STATE_INPUT == 'dense':
+            input_ = Game.get_height_hole_hold_next_input(gamestate)
+        else:
+            input_ = None
+            sys.stderr('STATE_INPUT is wrong. Exit...')
+            exit()
+
+        return input_
+
+    @staticmethod
+    def get_main_grid_input(gamestate):
+        buffer = []
+        for i in range(len(gamestate.grid)):
+            for j in range(len(gamestate.grid[i])):
+                buffer.append([gamestate.grid[i][j]])
+
+        buffer = np.reshape(np.array(buffer), [1, GAME_BOARD_HEIGHT, GAME_BOARD_WIDTH, 1])
+        buffer = (buffer > 0)
+        return buffer
+
+    @staticmethod
+    def get_hole_np_dqn(gamestate):
+        buffer = gamestate.get_hole_depth() + gamestate.get_heights()
+        return np.reshape(np.array(buffer), [1, GAME_BOARD_WIDTH * 2, 1])
+
+    @staticmethod
+    def get_height_hole_hold_next_input(gamestate):
+        # part1: heights + hold_depth. len -> 20
+        if STATE_INPUT == 'short':
+            buffer1 = [sum(gamestate.get_heights())] + [sum(gamestate.get_hole_depth())] + [gamestate.combo]
+        elif STATE_INPUT == 'long' or STATE_INPUT == 'dense':
+            buffer1 = gamestate.get_heights() + gamestate.get_hole_depth() + [gamestate.combo]
+        else:
+            buffer1 = None
+            sys.stdout.write('STATE_INPUT is wrong. Exit...')
+            exit()
+
+        # part2: current 1; hold 1; next 4
+        # next will always be the last for convenience, because of the change in the last one
+        # hold has one more position to record if last step is 'hold'
+        hold_num = 1
+        current_num = 1
+        next_num = 4
+        pool_size = Tetromino.pool_size()
+        buffer2 = [0] * (pool_size * (hold_num + current_num + next_num) + hold_num)
+
+        if hold_num == 1:
+            if gamestate.is_hold_last:
+                buffer2[0] = 1
+            if gamestate.hold_type is not None:
+                tetro_type_num = Tetromino.type_str_to_num(gamestate.hold_type) - 1
+                buffer2[tetro_type_num + hold_num] = 1
+
+        tetro_type_num = Tetromino.type_str_to_num(gamestate.tetromino.type_str) - 1
+        buffer2[hold_num + hold_num * pool_size + tetro_type_num] = 1
+
+        for i in range(next_num):
+            tetro_type_num = Tetromino.type_str_to_num(gamestate.next[i]) - 1
+            buffer2[hold_num + (i + hold_num + current_num) * pool_size + tetro_type_num] = 1
+
+        return np.reshape(np.array(buffer1 + buffer2, dtype='int8'), [1, -1])
+
+    def get_all_possible_gamestates(self, gamestate=None):
+        if gamestate is None:
+            gamestate_original = self.current_state.copy()
+        else:
+            gamestate_original = gamestate.copy()
+
+        if gamestate_original.game_status == 'gameover':
+            return [gamestate_original], [], [0], [True], [False], [False]
+
+        states_lr_all = list()
+        moves_lr_all = list()
+        ss, ms = gamestate_original.get_turn_expansion()
+        for s, m in list(zip(ss, ms)):
+            s_lr, m_lr = s.get_left_right_expansion(m)
+            states_lr_all += s_lr
+            moves_lr_all += m_lr
+
+        gamestates = list()
+        moves = list()
+        for s, m in list(zip(states_lr_all, moves_lr_all)):
+            s_ts, m_ts = s.get_tuck_spin_expansion(m)
+            gamestates += s_ts
+            moves += m_ts
+
+        add_scores = list()
+        dones = list()
+
+        # press down
+        for s, m in list(zip(gamestates, moves)):
+            add_score, done = s.hard_drop()
+            m += ["drop"]
+            add_scores += [add_score]
+            dones += [done]
+
+        is_include_hold = False
+        is_new_hold = False
+        # hold
+        if gamestate_original.hold_type != gamestate_original.tetromino.type_str and \
+                not gamestate_original.is_hold_last:
+            is_include_hold = True
+            if gamestate_original.hold_type is None:
+                is_new_hold = True
+            gamestate_original.hold()
+            gamestates += [gamestate_original.copy()]
+            moves += [["hold"]]
+            add_scores += [0]
+            if gamestate_original.game_status == "gameover":
+                dones += [True]
+            else:
+                dones += [False]
+
+        # gamestate is for GameMini; state is for neural network
+        self.all_possible_states = gamestates
+
+        return gamestates, moves, add_scores, dones, is_include_hold, is_new_hold
+
+    def get_all_possible_states_input(self, original_gamestate=None):
+        if original_gamestate is None:
+            gamestates, moves, add_scores, dones, is_include_hold, is_new_hold = self.get_all_possible_gamestates(
+                self.current_state)
+        else:
+            gamestates, moves, add_scores, dones, is_include_hold, is_new_hold = self.get_all_possible_gamestates(
+                original_gamestate)
+
+        state_input = list()
+        for gamestate in gamestates:
+            state_input.append(Game.get_state_input(gamestate))
+
+        return np.concatenate(state_input), np.array([add_scores]).reshape(
+            [-1, 1]), dones, is_include_hold, is_new_hold, moves, gamestates
+
+    def display_all_possible_state(self):
+        if self.gui is None: return
+
+        states, moves, _, _, _, _ = self.get_all_possible_gamestates()
+        for s, m in zip(states, moves):
+            self.update_gui(s, is_display_current=False)
+            self.gui.set_info_text(helper.text_list_flatten(m))
+            self.gui.redraw()
+            time.sleep(0.1)
+
+    def get_moves(self, target_gamestate, current_gamestate=None):
+        if current_gamestate is None:
+            current_gamestate = self.current_state
+
+        all_possible_gamestates, moves, _, _, _, _ = self.get_all_possible_gamestates(current_gamestate)
+        for i in range(len(all_possible_gamestates)):
+            if target_gamestate.check_equal(all_possible_gamestates[i]):
+                return moves[i]
+
+        sys.stderr('WARNING: cannot find the moves from current gamestate to target gamestate.')
+        return []
+
+
+if __name__ == "__main__":
+    game = Game(gui=Gui(), seed=None)
+    game.restart()
+    game.run()
