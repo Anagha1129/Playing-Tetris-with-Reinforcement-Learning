@@ -219,3 +219,198 @@ def initial_grid(self, height=0):
             if not self.check_collision(tetro): return False
 
         return True
+
+ def check_completed_lines(self, above_grid=None):
+        completed_lines = 0
+        row_num = 0
+        for row in self.grid:
+            complete = True
+            for sq in row:
+                if sq == 0:
+                    complete = False
+                    break
+            if complete:
+                self.remove_line(row_num, above_grid=above_grid)
+                completed_lines += 1
+            row_num += 1
+
+        return completed_lines
+
+    def remove_line(self, row_num, above_grid=None):
+        self.grid[1:row_num + 1] = self.grid[:row_num]
+        if above_grid is None:
+            new_row = [0] * GAME_BOARD_WIDTH
+        else:
+            new_row = above_grid[:]
+        self.grid[0] = new_row
+
+    def check_clear_board(self):
+        for i in reversed(range(GAME_BOARD_HEIGHT)):
+            for block in self.grid[i]:
+                if block != 0:
+                    return False
+        return True
+
+    def update_score(self, lines, is_t_spin, is_clear, combo):
+        if is_t_spin:
+            if lines == 1:
+                score_lines = 2
+            elif lines == 2:
+                score_lines = 4
+            elif lines == 3:
+                score_lines = 5
+            else:
+                score_lines = 0
+            self.t_spins[lines] += 1
+        else:
+            score_lines = lines
+
+        add_score = (score_lines + 1) * score_lines / 2 * 10
+
+        if is_clear:
+            add_score += 60
+
+        if T_SPIN_MARK and is_t_spin:
+            self.score = int(self.score) + add_score + 0.1
+            add_score += 0.1
+        else:
+            self.score += add_score
+        self.lines += lines
+
+        if add_score != 0:
+            if 1 < combo <= 3:
+                self.score += 10
+            elif 3 < combo <= 5:
+                self.score += 20
+            elif 5 < combo <= 8:
+                self.score += 30
+            elif combo > 8:
+                self.score += 40
+
+        if lines != 0: self.n_lines[lines - 1] += 1
+        self.pieces += 1
+        return add_score
+
+    def get_score_text(self):
+        s = "score:  " + str(int(self.score)) + "\n"
+        s += "lines:  " + str(int(self.lines)) + "\n"
+        s += "pieces: " + str(self.pieces) + "\n"
+        one_line = ''
+        for num in self.n_lines:
+            one_line += f'{num} '
+        s += "n_lines: " + one_line + '\n'
+        one_line = ''
+        for num in self.t_spins:
+            one_line += f'{num} '
+        s += "t_spins: " + one_line + '\n'
+        s += "combo: " + f'{self.combo}\n'
+        return s
+
+    def get_info_text(self):
+        # s = "unfinished info text \n"
+        s = "seed: " + str(self.seed)
+        return s
+
+    def soft_drop(self):
+        tetro = self.tetromino
+        down = 0
+        while not self.check_collision(tetro.move((0, 1, 0))): down += 1
+        tetro.move((0, -1, 0))
+        return down
+
+    def hard_drop(self):
+        self.soft_drop()
+        return self.process_down_collision()
+
+    def process_down_collision(self):
+        is_t_spin = self.check_t_spin()
+        is_above_grid = self.tetromino.check_above_grid()
+        above_grid = self.tetromino.to_above_grid()
+        self.freeze()
+        completed_lines = self.check_completed_lines(above_grid=above_grid)
+        is_clear = self.check_clear_board()
+        add_score = self.update_score(completed_lines, is_t_spin, is_clear, self.combo)
+        if add_score == 0:
+            self.combo = 0
+        else:
+            self.combo += 1
+
+        if self.check_collision() or (is_above_grid and completed_lines == 0):
+            self.game_status = "gameover"
+            done = True
+        else:
+            done = False
+        return add_score, done
+
+    def process_turn(self):  # return true if turn is successful
+        if self.check_collision():
+            success = False
+            shifted = None
+            if self.tetromino.type_str.lower() == 't':
+                spin_moves = SPIN_SHIFT_FOR_T
+            else:
+                spin_moves = SPIN_SHIFT_FOR_NON_T
+            for mov in spin_moves:
+                shifted = self.tetromino.copy().move(mov)
+                if not self.check_collision(shifted):
+                    success = True
+                    break
+            if success:
+                self.tetromino = shifted
+            return success
+        else:
+            return True
+
+    def process_left_right(self):
+        if self.check_collision():
+            return False
+        else:
+            return True
+
+    def check_equal(self, gamestate):
+        if self.is_hold_last != gamestate.is_hold_last or self.hold_type != gamestate.hold_type:
+            return False
+        if self.tetromino.type_str != gamestate.tetromino.type_str:
+            return False
+        for i in range(4):
+            if self.next[i] != gamestate.next[i]:
+                return False
+        for r in range(GAME_BOARD_HEIGHT):
+            for c in range(GAME_BOARD_WIDTH):
+                if self.grid[r][c] != gamestate.grid[r][c]:
+                    return False
+        return True
+
+    @classmethod
+    def cls_put_tet_to_grid(cls, grid, tetro):
+        grid_copy = helper.copy_2d(grid)
+        disp = tetro.get_displaced()
+        collide = False
+        for sq in disp:
+            x = sq[0]
+            y = sq[1]
+            if grid_copy[y][x] != 0:
+                collide = True
+            grid_copy[y][x] = tetro.to_num()
+        return grid_copy, collide
+
+    def hold(self):
+        if self.is_hold_last: return False
+
+        new_hold_type = self.tetromino.type_str
+        if self.hold_type is None:
+            self.tetromino = Tetromino.new_tetromino(self.next[0])
+            self.next[:-1] = self.next[1:]
+            self.next[-1] = self.next_next
+            self.next_next = Tetromino.random_type_str(self.get_random().random())
+        else:
+            self.tetromino = Tetromino.new_tetromino(self.hold_type)
+
+        self.hold_type = new_hold_type
+        self.is_hold_last = True
+        self.pieces += 1
+
+        if self.check_collision():
+            self.game_status = "gameover"
+        return True
+
