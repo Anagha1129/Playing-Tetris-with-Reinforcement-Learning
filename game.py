@@ -414,3 +414,186 @@ def initial_grid(self, height=0):
             self.game_status = "gameover"
         return True
 
+ def freeze(self):
+        self.grid = self.put_tet_to_grid()
+        self.tetromino = Tetromino.new_tetromino(self.next[0])
+        self.next[:-1] = self.next[1:]
+        self.next[-1] = self.next_next
+        self.next_next = Tetromino.random_type_str(self.get_random().random())
+        self.is_hold_last = False
+
+    def get_random(self):
+        # self.rand_count += 1
+        # return random.Random(self.rand_count * self.seed)
+        return self.rd
+
+    def check_up_collision(self):
+        self.tetromino.move((0, -1, 0))
+        collision = self.check_collision()
+        self.tetromino.move((0, 1, 0))
+        return collision
+
+    def get_turn_expansion(self):
+        state_turn = self.copy()
+        states_turn = [state_turn.copy()]
+        moves_turn = [[]]
+        for i in range(1, self.tetromino.rot_max):
+            state_turn.tetromino.move((0, 0, 1))
+            success = state_turn.process_turn()
+            if not success:
+                # usually not a concern until the end when
+                # there is a slight chance that you cannot turn
+                break
+            state = state_turn.copy()
+            states_turn += [state]
+            moves_turn += [["turn left"] * i]
+
+        return states_turn, moves_turn
+
+    def get_left_right_expansion(self, moves_turn):
+        # move 0
+        states_lr = [self.copy()]
+        moves_lr = [moves_turn]
+
+        # move left
+        state_copy = self.copy()
+        left = 0
+        while True:
+            state_copy.tetromino.move((-1, 0, 0))
+            if state_copy.check_collision():
+                break
+            else:
+                left += 1
+                moves = moves_turn + ["left"] * left
+                states_lr += [state_copy.copy()]
+                moves_lr += [moves]
+
+        # move right
+        state_copy = self.copy()
+        right = 0
+        while True:
+            state_copy.tetromino.move((1, 0, 0))
+            if state_copy.check_collision():
+                break
+            else:
+                right += 1
+                moves = moves_turn + ["right"] * right
+                states_lr += [state_copy.copy()]
+                moves_lr += [moves]
+
+        # soft drop
+        for s, m in list(zip(states_lr, moves_lr)):
+            s.soft_drop()
+            m += ["soft"]
+
+        return states_lr, moves_lr
+
+    def get_tuck_spin_expansion(self, moves_lr):
+        # move 0
+        states_ts = [self.copy()]
+        moves_ts = [moves_lr]
+
+        # move left
+        state_copy = self.copy()
+        left = 0
+        while True:
+            state_copy.tetromino.move((-1, 0, 0))
+            if state_copy.check_collision():
+                break
+            elif not state_copy.check_up_collision():
+                break
+            else:
+                left += 1
+                moves = moves_lr + ["left"] * left
+                states_ts += [state_copy.copy()]
+                moves_ts += [moves]
+
+        # move right
+        state_copy = self.copy()
+        right = 0
+        while True:
+            state_copy.tetromino.move((1, 0, 0))
+            if state_copy.check_collision():
+                break
+            elif not state_copy.check_up_collision():
+                break
+            else:
+                right += 1
+                moves = moves_lr + ["right"] * right
+                states_ts += [state_copy.copy()]
+                moves_ts += [moves]
+
+        if self.tetromino.rot_max == 1:
+            return states_ts, moves_ts
+
+        more_states_ts = list()
+        more_moves_ts = list()
+        for i in range(len(states_ts)):
+            state_copy = states_ts[i].copy()
+            state_copy.tetromino.move((0, 0, 1))
+            if state_copy.process_turn() and state_copy.check_up_collision():
+                more_states_ts += [state_copy]
+                more_moves_ts.append(moves_ts[i] + ["turn left"] * 1)
+
+                if self.tetromino.rot_max > 2:
+                    state_copy = state_copy.copy()
+                    state_copy.tetromino.move((0, 0, 1))
+                    if state_copy.process_turn() and state_copy.check_up_collision():
+                        more_states_ts += [state_copy]
+                        more_moves_ts.append(moves_ts[i] + ["turn left"] * 2)
+
+            if self.tetromino.rot_max == 2:
+                continue
+
+            state_copy = states_ts[i].copy()
+            state_copy.tetromino.move((0, 0, -1))
+            if state_copy.process_turn() and state_copy.check_up_collision():
+                more_states_ts += [state_copy]
+                more_moves_ts.append(moves_ts[i] + ["turn right"] * 1)
+
+                if self.tetromino.rot_max > 2:
+                    state_copy = state_copy.copy()
+                    state_copy.tetromino.move((0, 0, -1))
+                    if state_copy.process_turn() and state_copy.check_up_collision():
+                        more_states_ts += [state_copy]
+                        more_moves_ts.append(moves_ts[i] + ["turn right"] * 2)
+
+        return states_ts + more_states_ts, moves_ts + more_moves_ts
+
+    def get_height_sum(self):
+        heights = self.get_heights()
+        return sum(heights)
+
+    def get_hole_depth(self):
+        depth = [0] * GAME_BOARD_WIDTH
+        highest_brick = 0
+        for j in range(GAME_BOARD_WIDTH):
+            has_found_brick = False
+            for i in range(GAME_BOARD_HEIGHT):
+                if not has_found_brick:
+                    if self.grid[i][j] > 0:
+                        has_found_brick = True
+                        highest_brick = i
+                elif self.grid[i][j] == 0:
+                    depth[j] = i - highest_brick
+                    break
+        return depth
+
+    def get_heights(self):
+        heights = [0] * GAME_BOARD_WIDTH
+        for j in range(GAME_BOARD_WIDTH):
+            for i in range(GAME_BOARD_HEIGHT):
+                if self.grid[i][j] > 0:
+                    heights[j] = GAME_BOARD_HEIGHT - i
+                    break
+        return heights
+
+
+class Game:
+    def __init__(self, gui=None, seed=None, height=0):
+        self.gui = gui
+        self.seed = seed
+        self.current_state = Gamestate(seed=seed, height=height)
+        self.all_possible_states = []
+        self.height = height
+
